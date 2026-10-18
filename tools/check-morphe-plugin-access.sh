@@ -51,12 +51,19 @@ fi
 echo "Morphe settings plugin: $plugin_id $version"
 echo "Plugin repository: $repo_url"
 
-if git ls-remote --exit-code --tags "$upstream" "refs/tags/v$version" >/dev/null 2>&1; then
-  echo "Upstream release tag v$version: found"
-else
-  error "Morphe plugin version $version has no upstream release tag v$version ($upstream/tags)."
-  exit 1
-fi
+ls_remote_status=0
+git ls-remote --exit-code --tags "$upstream" "refs/tags/v$version" >/dev/null || ls_remote_status=$?
+case "$ls_remote_status" in
+  0) echo "Upstream release tag v$version: found" ;;
+  2)
+    error "Morphe plugin version $version has no upstream release tag v$version ($upstream/tags)."
+    exit 1
+    ;;
+  *)
+    error "Could not list upstream tags from $upstream (git exit $ls_remote_status)."
+    exit 1
+    ;;
+esac
 
 if [[ -z "${GITHUB_ACTOR:-}" || -z "${GITHUB_TOKEN:-}" ]]; then
   if [[ "$require_credentials" == true ]]; then
@@ -77,16 +84,28 @@ curl_quote() {
 }
 
 # Redirects are not followed, so credentials are never sent to another host.
-status="$(
+response="$(
   printf 'user = %s\n' "$(curl_quote "$GITHUB_ACTOR:$GITHUB_TOKEN")" |
     curl --config - --silent --show-error --output /dev/null \
-      --write-out '%{http_code}' --max-time 60 --retry 2 \
+      --write-out '%{http_code} %{redirect_url}' --max-time 60 --retry 2 \
       "$marker_url"
-)" || status="${status:-000}"
+)" || true
+status="${response%% *}"
+status="${status:-000}"
+redirect="${response#* }"
+redirect_host="$(sed -nE 's#^https://([^/:]+)([:/].*)?$#\1#p' <<<"$redirect")"
 
 case "$status" in
-  2?? | 3??)
+  2??)
     echo "GitHub Packages marker $artifact:$version: accessible (HTTP $status)"
+    ;;
+  3??)
+    if [[ "$redirect_host" == *.githubusercontent.com ]]; then
+      echo "GitHub Packages marker $artifact:$version: accessible (HTTP $status to $redirect_host)"
+    else
+      error "GitHub Packages returned an unexpected redirect for $artifact:$version (HTTP $status to ${redirect_host:-unknown host})."
+      exit 1
+    fi
     ;;
   401)
     error "GitHub Packages rejected the credentials for $artifact:$version (HTTP 401). Use a valid, unexpired personal access token (classic) with the read:packages scope; the Maven registry does not accept fine-grained tokens. Gradle reports this as 'plugin was not found'."

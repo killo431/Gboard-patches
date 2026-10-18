@@ -94,7 +94,7 @@ jobs:
             echo "- Required inputs, wrapper shell syntax, and commit whitespace checked."
             echo "- Tracked JSON syntax checked; not schemas."
             echo "- Pinned Morphe plugin version matches an upstream release tag."
-            echo "- File/JSON syntax checks only; no Gradle or package credentials."
+            echo "- No Gradle execution or package credentials."
             echo "- Full build only on default-branch pushes or manual dispatch."
           } >> "$GITHUB_STEP_SUMMARY"
 
