@@ -314,6 +314,16 @@ Before running Gradle locally, authenticate to Morphe's GitHub Packages registry
 - `gpr.user` and `gpr.key` in `~/.gradle/gradle.properties`
 - `GITHUB_ACTOR` and `GITHUB_TOKEN` as environment variables
 
+The token must be a personal access token (classic) with the `read:packages`
+scope; GitHub Packages' Maven registry rejects missing, expired, or fine-grained
+tokens. Gradle reports such rejections only as
+`Plugin [id: 'app.morphe.patches', ...] was not found`. To see the actual HTTP
+status without printing the token, run:
+
+```bash
+GITHUB_ACTOR=<user> GITHUB_TOKEN=<token> bash tools/check-morphe-plugin-access.sh --require-credentials
+```
+
 Build the Android patch bundle:
 
 ```powershell
@@ -336,8 +346,9 @@ Generated outputs:
 
 The separate **Verify configuration and build** workflow checks required files,
 wrapper shell syntax, commit whitespace, and all tracked JSON syntax on pull
-requests, branch pushes (not tags), and manual dispatch. These credential-free
-checks do not validate schemas, execute Gradle, or resolve dependencies.
+requests, branch pushes (not tags), and manual dispatch. It also checks that the
+pinned Morphe settings plugin version has an upstream release tag. These
+credential-free checks do not validate schemas, execute Gradle, or resolve dependencies.
 Only default-branch pushes and manual dispatch can run the full test/build job.
 The existing release workflow and release publishing are unchanged.
 
@@ -349,8 +360,11 @@ The existing release workflow and release publishing are unchanged.
    Protection availability depends on account/repository capabilities; if required
    protections are unavailable, do not add credentials or run this job.
 2. Add environment variable `MORPHE_PACKAGES_USER` (the token owner's username)
-   and environment secret `MORPHE_PACKAGES_TOKEN`, with least-privilege read access
-   to the Morphe registry. Never commit credentials. The Gradle steps map these to
+   and environment secret `MORPHE_PACKAGES_TOKEN`, a personal access token
+   (classic) with only the `read:packages` scope (fine-grained tokens are not
+   accepted by the Maven registry). Never commit credentials. Before Gradle runs,
+   the credential check requests the Morphe plugin marker and fails with the
+   HTTP status (401: token rejected; 403: token lacks package read access). The Gradle steps map these to
    `GITHUB_ACTOR`/`GITHUB_TOKEN`; other steps do not receive the package token,
    except the non-printing presence check. This PR provisions neither protections
    nor credentials.

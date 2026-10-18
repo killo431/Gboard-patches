@@ -84,12 +84,16 @@ jobs:
               sys.exit(1)
           PY
 
+      - name: Check Morphe plugin version (no credentials)
+        run: bash tools/check-morphe-plugin-access.sh
+
       - name: Explain verification scope
         run: |
           {
             echo "## Configuration checks"
             echo "- Required inputs, wrapper shell syntax, and commit whitespace checked."
             echo "- Tracked JSON syntax checked; not schemas."
+            echo "- Pinned Morphe plugin version matches an upstream release tag."
             echo "- File/JSON syntax checks only; no Gradle or package credentials."
             echo "- Full build only on default-branch pushes or manual dispatch."
           } >> "$GITHUB_STEP_SUMMARY"
@@ -132,6 +136,10 @@ jobs:
             echo "::error::Set MORPHE_PACKAGES_TOKEN in the ci-build environment."
             exit 1
           }
+          # Gradle reports 401/403 from GitHub Packages as "plugin not found";
+          # check the plugin marker directly to surface the HTTP status.
+          GITHUB_ACTOR="$PACKAGE_USER" GITHUB_TOKEN="$PACKAGE_TOKEN" \
+            bash tools/check-morphe-plugin-access.sh --require-credentials
 
       - name: Verify Android SDK and toolchain
         run: |
