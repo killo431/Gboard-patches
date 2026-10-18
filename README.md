@@ -332,6 +332,60 @@ Generated outputs:
 - `patches-list.json`
 - `patches-bundle.json`
 
+### Verification CI in killo431/Gboard-patches
+
+The separate **Verify configuration and build** workflow checks required files,
+wrapper shell syntax, commit whitespace, and all tracked JSON syntax on pull
+requests, branch pushes (not tags), and manual dispatch. These credential-free
+checks do not validate schemas, execute Gradle, or resolve dependencies.
+Only default-branch pushes and manual dispatch can run the full test/build job.
+The existing release workflow and release publishing are unchanged.
+
+**Administrator setup is mandatory before running credentialed jobs:**
+
+1. Manually create the `ci-build` environment in this fork's **Settings →
+   Environments**, with required reviewers and permitted deployment branches.
+   Referencing an environment in YAML alone does **not** enforce approval.
+   Protection availability depends on account/repository capabilities; if required
+   protections are unavailable, do not add credentials or run this job.
+2. Add environment variable `MORPHE_PACKAGES_USER` (the token owner's username)
+   and environment secret `MORPHE_PACKAGES_TOKEN`, with least-privilege read access
+   to the Morphe registry. Never commit credentials. The Gradle steps map these to
+   `GITHUB_ACTOR`/`GITHUB_TOKEN`; other steps do not receive the package token,
+   except the non-printing presence check. This PR provisions neither protections
+   nor credentials.
+3. Before approving **workflow_dispatch**, review the selected branch's executable
+   workflow, wrapper, build scripts, plugins, and tests: they execute with the
+   package credential. Default-branch builds also require trusted code.
+   Never use `pull_request_target` to run PR code with credentials.
+
+After setup, use this fork's **Actions → Verify configuration and build → Run
+workflow**, select a reviewed branch, and approve the environment job. Review
+logs and `test-reports-<run_id>-<run_attempt>` (7-day retention) before downloading
+`patch-bundle-<sha>-<run_attempt>` (14-day retention). Reports from patches,
+extension, and calculator are uploaded even after failure when available; missing
+reports produce a warning. The bundle contains `.mpp` files, both metadata JSON
+files, `build-info.txt` with the source commit, and `SHA256SUMS`; after extracting,
+run `sha256sum -c SHA256SUMS`. Nothing is published to releases or packages.
+
+The build uses Temurin Java 21, an Android SDK, binding generation,
+capability-wiring verification, patch tests, both modules' unit tests, Android
+packaging, and metadata generation. Both extension modules explicitly run
+`testReleaseUnitTest`: the pinned [Morphe 1.3.3 plugin's Android configuration](https://github.com/MorpheApp/morphe-patches-gradle-plugin/blob/52be641ed3b965a20c33bd43e0cbe9efd308bc64/src/main/kotlin/app/morphe/patches/gradle/ExtensionPlugin.kt)
+applies `com.android.application` and configures the release build type used by
+extension sync. This is source evidence, not executed Gradle task discovery.
+Dependency resolution, runtime task availability, tests, and bundle generation
+require the first approved build;
+local syntax/static validation is not evidence that these ran successfully.
+Keep real external AI requests out of CI; use mocks and synthetic fixtures.
+A passing build does not guarantee patched APK/device/editor behavior, typing
+latency, backend compatibility, or Google AI eligibility. This workflow does not
+implement roadmap features.
+
+To roll back, disable this verification workflow in Actions or revert its addition.
+Revoke the package token if exposure is suspected, and remove unused environment
+credentials. Leave the release workflow unchanged.
+
 ## License
 
 Released under the [GNU General Public License v3.0](LICENSE).
