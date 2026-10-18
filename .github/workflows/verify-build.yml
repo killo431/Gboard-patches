@@ -1,0 +1,212 @@
+name: Verify configuration and build
+
+on:
+  pull_request:
+  push:
+    branches:
+      - "**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  config:
+    name: Configuration checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+
+      - name: Check required build inputs
+        run: |
+          set -euo pipefail
+          required=(
+            gradlew
+            gradle/wrapper/gradle-wrapper.jar
+            gradle/wrapper/gradle-wrapper.properties
+            settings.gradle.kts
+            patches/build.gradle.kts
+            patches/src/main/resources/gboard/gboard-version-bindings.json
+            patches/src/main/resources/gboard/gboard-port-product-catalog.json
+            extensions/extension/native-payload/arm64-v8a/libgboardpatches_quickjs.so
+          )
+          for path in "${required[@]}"; do
+            test -s "$path" || {
+              echo "::error file=$path::Missing or empty build input"
+              exit 1
+            }
+          done
+          bash -n gradlew
+          # Check the checked-out commit (the PR merge against its base on PRs).
+          git show --format= --check --diff-merges=first-parent HEAD
+          git diff --check
+
+      - name: Validate tracked JSON syntax
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import pathlib
+          import subprocess
+          import sys
+
+          paths = subprocess.check_output(
+              ["git", "ls-files", "-z", "--", "*.json"]
+          ).split(b"\0")
+
+          failures = []
+          count = 0
+          for raw_name in filter(None, paths):
+              name = os.fsdecode(raw_name)
+              count += 1
+              try:
+                  json.loads(pathlib.Path(name).read_text(encoding="utf-8"))
+              except (ValueError, UnicodeError, OSError) as error:
+                  failures.append(f"{name!r}: {error}")
+
+          print(f"Checked {count} tracked JSON files; {len(failures)} failed.")
+          if failures:
+              print("\n".join(failures), file=sys.stderr)
+              sys.exit(1)
+          PY
+
+      - name: Explain verification scope
+        run: |
+          {
+            echo "## Configuration checks"
+            echo "- Required inputs, wrapper shell syntax, and commit whitespace checked."
+            echo "- Tracked JSON syntax checked; not schemas."
+            echo "- File/JSON syntax checks only; no Gradle or package credentials."
+            echo "- Full build only on default-branch pushes or manual dispatch."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: Approved tests and patch bundle
+    needs: config
+    # Environment protections must be configured by an administrator first.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' &&
+       github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    environment: ci-build
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Java 21
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Verify package credentials
+        env:
+          PACKAGE_USER: ${{ vars.MORPHE_PACKAGES_USER }}
+          PACKAGE_TOKEN: ${{ secrets.MORPHE_PACKAGES_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$PACKAGE_USER" || {
+            echo "::error::Set MORPHE_PACKAGES_USER in the ci-build environment."
+            exit 1
+          }
+          test -n "$PACKAGE_TOKEN" || {
+            echo "::error::Set MORPHE_PACKAGES_TOKEN in the ci-build environment."
+            exit 1
+          }
+
+      - name: Verify Android SDK and toolchain
+        run: |
+          set -euo pipefail
+          sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          if [[ -z "$sdk" || ! -d "$sdk" ]]; then
+            echo "::error::Android SDK is unavailable on this runner."
+            exit 1
+          fi
+          chmod +x gradlew
+          java -version
+          ./gradlew --version
+
+      - name: Verify Gradle configuration and bindings
+        env:
+          GITHUB_ACTOR: ${{ vars.MORPHE_PACKAGES_USER }}
+          GITHUB_TOKEN: ${{ secrets.MORPHE_PACKAGES_TOKEN }}
+        run: |
+          ./gradlew --no-daemon --console=plain --stacktrace \
+            :patches:generateGboardVersionBindings \
+            :patches:verifyGboardCapabilityWiring
+
+      - name: Test and build patch bundle
+        # Morphe 1.3.3 applies com.android.application with a release build type.
+        env:
+          GITHUB_ACTOR: ${{ vars.MORPHE_PACKAGES_USER }}
+          GITHUB_TOKEN: ${{ secrets.MORPHE_PACKAGES_TOKEN }}
+        run: |
+          ./gradlew --no-daemon --console=plain --stacktrace \
+            :patches:test \
+            :extensions:extension:testReleaseUnitTest \
+            :extensions:calculator:testReleaseUnitTest \
+            :patches:buildAndroid \
+            :patches:generatePatchesList
+
+      - name: Stage bundle, metadata, and checksums
+        run: |
+          set -euo pipefail
+          mkdir -p ci-artifacts
+          shopt -s nullglob
+          bundles=(patches/build/libs/*.mpp)
+          ((${#bundles[@]} > 0)) || {
+            echo "::error::No MPP bundle was produced."
+            exit 1
+          }
+          cp "${bundles[@]}" ci-artifacts/
+          cp patches-list.json patches-bundle.json ci-artifacts/
+          python3 -m json.tool ci-artifacts/patches-list.json >/dev/null
+          python3 -m json.tool ci-artifacts/patches-bundle.json >/dev/null
+          echo "source_commit=$GITHUB_SHA" > ci-artifacts/build-info.txt
+          (
+            cd ci-artifacts
+            sha256sum -- *.mpp *.json build-info.txt > SHA256SUMS
+          )
+
+      - name: Upload test reports
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-reports-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            patches/build/reports/tests/
+            patches/build/test-results/
+            extensions/extension/build/reports/tests/
+            extensions/extension/build/test-results/
+            extensions/calculator/build/reports/tests/
+            extensions/calculator/build/test-results/
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload verified build
+        if: ${{ success() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: patch-bundle-${{ github.sha }}-${{ github.run_attempt }}
+          path: ci-artifacts/
+          if-no-files-found: error
+          retention-days: 14
