@@ -87,12 +87,13 @@ curl_quote() {
 response="$(
   printf 'user = %s\n' "$(curl_quote "$GITHUB_ACTOR:$GITHUB_TOKEN")" |
     curl --config - --silent --show-error --output /dev/null \
-      --write-out '%{http_code} %{redirect_url}' --max-time 60 --retry 2 \
+      --write-out '%{http_code} %{redirect_url}' --max-time 30 --retry 2 --retry-max-time 90 \
       "$marker_url"
 )" || true
-status="${response%% *}"
+status=""
+redirect=""
+read -r status redirect <<<"$response" || true
 status="${status:-000}"
-redirect="${response#* }"
 redirect_host="$(sed -nE 's#^https://([^/:]+)([:/].*)?$#\1#p' <<<"$redirect")"
 
 case "$status" in
